@@ -1,11 +1,11 @@
 [project]
-name = "ai-knowledge-agent"
+name = "ai-knowledge-agent-backend"
 version = "0.1.0"
 description = "智能个人知识库助手后端服务"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.104.0",
+    "fastapi[standard]>=0.104.0",
     "uvicorn[standard]>=0.24.0",
     "langgraph>=0.0.20",
     "langchain>=0.1.0",
@@ -38,3 +38,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
+
+[tool.fastapi]
+entrypoint = "app.main:app"
