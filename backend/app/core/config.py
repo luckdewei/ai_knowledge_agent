@@ -30,12 +30,14 @@ class Settings(BaseSettings):
 
     # 数据库配置
     database_url: str = Field(
-        default="postgresql+asyncpg://postgres:password@localhost:5432/knowledge_db"
+        default="postgresql+asyncpg://postgres:postgres123@localhost:5432/knowledge_db",
+        alias="DATABASE_URL",
     )
 
     # Redis 配置（用于缓存和任务队列）
-    redis_url: str = Field(default="redis://localhost:6379/0")
+    redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
 
+    # 加载环境变量
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
