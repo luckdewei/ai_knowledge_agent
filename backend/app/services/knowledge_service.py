@@ -53,7 +53,9 @@ class KnowledgeService:
             embedding = await embeddings_service.embed_query(
                 knowledge_in.content[:2000]
             )  # 限制长度
-            knowledge.embedding = cast(Any, embedding)  # pgvector 运行时接受 list[float]
+            knowledge.embedding = cast(
+                Any, embedding
+            )  # pgvector 运行时接受 list[float]
             logger.debug(f"Generated embedding for {knowledge.title[:50]}")
         except Exception as e:
             logger.error(f"Failed to generate embedding: {e}")
@@ -136,7 +138,8 @@ class KnowledgeService:
         knowledge = result.scalar_one_or_none()
         if knowledge:
             knowledge.update_access_time()
-            await self.db.commit()
+            await self.db.commit()  # 把改动保存到数据库
+            await self.db.refresh(knowledge)  # 再从数据库读回来，保证对象是最新状态
         return knowledge
 
     async def search_semantic(
