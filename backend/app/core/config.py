@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # 向量模型配置（硅基流动）
     embedding_api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
     embedding_base_url: str = "https://api.siliconflow.cn/v1/embeddings"
-    embedding_model: str = "BAAI/bge-large-zh-v1.5"
+    embedding_model: str = "BAAI/bge-m3"
 
     # 数据库配置
     database_url: str = Field(

@@ -26,18 +26,18 @@ class RateLimiter:
 
     def __init__(self, rate: float = 10, per: float = 1.0):
         self.rate = rate  # 每个 per 秒允许的最大请求数
-        self.per = per
-        self.tokens = rate
-        self.last_refill = asyncio.get_event_loop().time()
-        self.lock = asyncio.Lock()
+        self.per = per  # 每个请求的间隔时间
+        self.tokens = rate  # 令牌数量
+        self.last_refill = asyncio.get_event_loop().time()  # 上次令牌补给时间
+        self.lock = asyncio.Lock()  # 锁，避免多个协程同时访问
 
     async def acquire(self):
         """获取一个令牌；不足时异步等待后重试。"""
         async with self.lock:
-            now = asyncio.get_event_loop().time()
-            elapsed = now - self.last_refill
-            self.tokens = min(self.rate, self.tokens + elapsed * self.rate)
-            self.last_refill = now
+            now = asyncio.get_event_loop().time()  # 当前时间
+            elapsed = now - self.last_refill  # 时间间隔
+            self.tokens = min(self.rate, self.tokens + elapsed * self.rate)  # 令牌数量
+            self.last_refill = now  # 上次令牌补给时间
 
             if self.tokens >= 1:
                 self.tokens -= 1
@@ -71,7 +71,7 @@ class OnlineEmbeddings:
         """单批次向量化；网络/5xx 错误时指数退避重试。"""
 
         await self.rate_limiter.acquire()
-
+        # 使用 httpx 异步客户端发送请求，避免阻塞当前协程
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}",
