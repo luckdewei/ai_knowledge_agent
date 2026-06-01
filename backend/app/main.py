@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 import logging
 
 from app.core.config import settings
-from app.api.routes import health, knowledge, agent, tools
+from app.api.routes import health, knowledge, agent, tools, ingestion
 
 # 配置日志
 logging.basicConfig(
@@ -58,6 +58,7 @@ def create_app() -> FastAPI:
     # 注册路由
     app.include_router(health.router, prefix="/api/health", tags=["health"])
     app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"])
+    app.include_router(ingestion.router, prefix="/api/ingestion", tags=["ingestion"])
     # app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
     # app.include_router(tools.router, prefix="/api/tools", tags=["tools"])
 

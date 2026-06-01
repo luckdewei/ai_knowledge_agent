@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     embedding_base_url: str = "https://api.siliconflow.cn/v1/embeddings"
     embedding_model: str = "BAAI/bge-m3"
 
+    # 语音识别配置（硅基流动，未设置 SPEECH_API_KEY 时复用 EMBEDDING_API_KEY）
+    speech_api_key: str = Field(default="", alias="SPEECH_API_KEY")
+    speech_base_url: str = "https://api.siliconflow.cn/v1/audio/transcriptions"
+    speech_model: str = "FunAudioLLM/SenseVoiceSmall"
+
     # 数据库配置
     database_url: str = Field(
         default="postgresql+asyncpg://postgres:postgres123@localhost:5432/knowledge_db",

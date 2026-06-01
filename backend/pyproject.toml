@@ -10,6 +10,7 @@ dependencies = [
     "langgraph>=0.0.20",
     "langchain>=0.1.0",
     "langchain-openai>=0.0.2",
+    "openai>=1.40.0",
     "sqlalchemy>=2.0.0",
     "asyncpg>=0.29.0",
     "pgvector>=0.2.0",
@@ -19,6 +20,16 @@ dependencies = [
     "pydantic-settings>=2.1.0",
     "greenlet>=3.5.1",
     "alembic>=1.18.4",
+    "pypdf>=6.12.2",
+    "python-docx>=1.2.0",
+    "markdown>=3.10.2",
+    "beautifulsoup4>=4.14.3",
+    "lxml>=6.1.1",
+    "pillow>=12.2.0",
+    "aiofiles>=24.1.0",
+    "pytesseract>=0.3.13",
+    "readability-lxml>=0.8.4.1",
+    "trafilatura>=2.0.0",
 ]
 
 [project.optional-dependencies]
