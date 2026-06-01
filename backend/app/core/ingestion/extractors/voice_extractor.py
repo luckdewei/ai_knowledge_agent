@@ -35,8 +35,9 @@ def _parse_audio_base64(audio_base64: str, format: str) -> tuple[bytes, str]:
     """解析 Base64 音频，兼容 `data:audio/...;base64,...` Data URI。"""
     payload = audio_base64.strip()
     inferred_format = format
-
+    # 如果 payload 以 data: 开头，则解析为 base64 编码的音频数据
     if payload.startswith("data:"):
+        # 解析 data URI 的头部和 base64 编码的音频数据
         header, _, encoded = payload.partition(",")
         if not encoded:
             raise ValueError("Invalid data URI: missing base64 payload")
@@ -45,7 +46,7 @@ def _parse_audio_base64(audio_base64: str, format: str) -> tuple[bytes, str]:
         mime_type = header[5:].split(";", 1)[0].lower()
         if format == "webm":
             inferred_format = _MIME_TO_FORMAT.get(mime_type, format)
-
+    # 解码 base64 编码的音频数据
     audio_bytes = base64.b64decode(payload, validate=False)
     if not audio_bytes:
         raise ValueError("Empty audio data after base64 decode")
