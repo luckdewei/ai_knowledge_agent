@@ -30,6 +30,10 @@ dependencies = [
     "pytesseract>=0.3.13",
     "readability-lxml>=0.8.4.1",
     "trafilatura>=2.0.0",
+    "apscheduler>=3.11.2",
+    "scikit-learn>=1.4.0",
+    "langchain-text-splitters>=1.1.2",
+    "numpy>=2.4.6",
 ]
 
 [project.optional-dependencies]

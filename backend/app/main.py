@@ -5,7 +5,8 @@ from fastapi.responses import JSONResponse
 import logging
 
 from app.core.config import settings
-from app.api.routes import health, knowledge, agent, tools, ingestion
+from app.api.routes import health, knowledge, agent, organization, tools, ingestion
+from app.core.scheduler import get_scheduler
 
 # 配置日志
 logging.basicConfig(
@@ -28,10 +29,16 @@ async def lifespan(app: FastAPI):
     # await init_database()
     # await init_agent()
 
+    # 启动定时调度器
+    scheduler = get_scheduler()
+    scheduler.start()
+
     yield
 
     # Shutdown: 清理资源
+    scheduler.shutdown()
     logger.info("Shutting down application")
+    # 关闭调度器
     # await close_database()
 
 
@@ -60,6 +67,9 @@ def create_app() -> FastAPI:
     app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"])
     app.include_router(ingestion.router, prefix="/api/ingestion", tags=["ingestion"])
     app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
+    app.include_router(
+        organization.router, prefix="/api/organization", tags=["organization"]
+    )
     # app.include_router(tools.router, prefix="/api/tools", tags=["tools"])
 
     # 全局异常处理
