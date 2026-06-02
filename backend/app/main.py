@@ -1,10 +1,11 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
 
 from app.core.config import settings
+from app.models.response import error_response
 from app.api.routes import (
     health,
     insights,
@@ -15,6 +16,8 @@ from app.api.routes import (
     ingestion,
 )
 from app.core.scheduler import get_scheduler
+from app.core.agent.tools.init_tools import init_tools
+from app.core.database import engine, AsyncSessionLocal
 
 # 配置日志
 logging.basicConfig(
@@ -37,6 +40,10 @@ async def lifespan(app: FastAPI):
     # await init_database()
     # await init_agent()
 
+    # 初始化工具注册表
+    async with AsyncSessionLocal() as session:
+        await init_tools(session)
+
     # 启动定时调度器
     scheduler = get_scheduler()
     scheduler.start()
@@ -45,9 +52,9 @@ async def lifespan(app: FastAPI):
 
     # Shutdown: 清理资源
     scheduler.shutdown()
+    # 关闭数据库连接
+    await engine.dispose()
     logger.info("Shutting down application")
-    # 关闭调度器
-    # await close_database()
 
 
 def create_app() -> FastAPI:
@@ -79,16 +86,42 @@ def create_app() -> FastAPI:
         organization.router, prefix="/api/organization", tags=["organization"]
     )
     app.include_router(insights.router, prefix="/api/insights", tags=["insights"])
-    # app.include_router(tools.router, prefix="/api/tools", tags=["tools"])
+    app.include_router(tools.router, prefix="/api/tools", tags=["tools"])
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=error_response(
+                code=exc.status_code, message=detail, detail=detail
+            ).model_dump(),
+        )
 
     # 全局异常处理
     @app.exception_handler(Exception)
-    async def global_exception_handler(request, exc):
+    async def global_exception_handler(request: Request, exc: Exception):
         logger.error(f"Unhandled exception: {exc}", exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"detail": "Internal server error", "type": type(exc).__name__},
+            content=error_response(
+                code=500,
+                message="Internal server error",
+                detail=str(exc) if settings.debug else None,
+            ).model_dump(),
         )
+
+    @app.middleware("http")
+    async def log_requests(request: Request, call_next):
+        import time
+
+        start_time = time.time()
+        response = await call_next(request)
+        duration = (time.time() - start_time) * 1000
+        logger.info(
+            f"{request.method} {request.url.path} - {response.status_code} - {duration:.2f}ms"
+        )
+        return response
 
     return app
 

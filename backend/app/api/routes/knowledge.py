@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List, Optional
+from typing import List
 
 from app.core.database import get_db
 from app.services.knowledge_service import KnowledgeService
 from app.models.knowledge import Knowledge
+from app.models.response import APIResponse, success_response
 from app.models.schemas import (
     KnowledgeCreate,
     KnowledgeUpdate,
@@ -21,25 +22,27 @@ def _to_response(knowledge: Knowledge) -> KnowledgeResponse:
     return KnowledgeResponse.model_validate(knowledge, from_attributes=True)
 
 
-@router.post("/create", response_model=KnowledgeResponse)
+@router.post("/create", response_model=APIResponse[KnowledgeResponse])
 async def create_knowledge(
     knowledge_in: KnowledgeCreate, db: AsyncSession = Depends(get_db)
 ):
     """创建知识条目"""
     service = KnowledgeService(db)
-    return _to_response(await service.create(knowledge_in))
+    return success_response(data=_to_response(await service.create(knowledge_in)))
 
 
-@router.post("/batch", response_model=List[KnowledgeResponse])
+@router.post("/batch", response_model=APIResponse[List[KnowledgeResponse]])
 async def batch_create_knowledge(
     knowledge_list: List[KnowledgeCreate], db: AsyncSession = Depends(get_db)
 ):
     """批量创建知识条目"""
     service = KnowledgeService(db)
-    return [_to_response(k) for k in await service.create_batch(knowledge_list)]
+    return success_response(
+        data=[_to_response(k) for k in await service.create_batch(knowledge_list)]
+    )
 
 
-@router.post("/search", response_model=SearchResponse)
+@router.post("/search", response_model=APIResponse[SearchResponse])
 async def search_knowledge(request: SearchRequest, db: AsyncSession = Depends(get_db)):
     """语义搜索知识库"""
     import time
@@ -49,20 +52,22 @@ async def search_knowledge(request: SearchRequest, db: AsyncSession = Depends(ge
     service = KnowledgeService(db)
     results, total = await service.search_semantic(request)
 
-    return SearchResponse(
-        results=[
-            SearchResult(
-                knowledge=_to_response(knowledge),
-                similarity_score=score,
-            )
-            for knowledge, score in results
-        ],
-        total=total,
-        query_time_ms=(time.time() - start_time) * 1000,
+    return success_response(
+        data=SearchResponse(
+            results=[
+                SearchResult(
+                    knowledge=_to_response(knowledge),
+                    similarity_score=score,
+                )
+                for knowledge, score in results
+            ],
+            total=total,
+            query_time_ms=(time.time() - start_time) * 1000,
+        )
     )
 
 
-@router.get("/recent", response_model=List[KnowledgeResponse])
+@router.get("/recent", response_model=APIResponse[List[KnowledgeResponse]])
 async def get_recent_knowledge(
     days: int = Query(default=30, ge=1, le=365),
     limit: int = Query(default=50, ge=1, le=200),
@@ -70,27 +75,29 @@ async def get_recent_knowledge(
 ):
     """获取最近的知识条目"""
     service = KnowledgeService(db)
-    return [_to_response(k) for k in await service.get_recent(days=days, limit=limit)]
+    return success_response(
+        data=[_to_response(k) for k in await service.get_recent(days=days, limit=limit)]
+    )
 
 
-@router.get("/stats")
+@router.get("/stats", response_model=APIResponse)
 async def get_stats(db: AsyncSession = Depends(get_db)):
     """获取知识库统计信息"""
     service = KnowledgeService(db)
-    return await service.get_stats()
+    return success_response(data=await service.get_stats())
 
 
-@router.get("/{knowledge_id}", response_model=KnowledgeResponse)
+@router.get("/{knowledge_id}", response_model=APIResponse[KnowledgeResponse])
 async def get_knowledge(knowledge_id: str, db: AsyncSession = Depends(get_db)):
     """获取单个知识条目"""
     service = KnowledgeService(db)
     knowledge = await service.get_by_id(knowledge_id)
     if not knowledge:
         raise HTTPException(status_code=404, detail="Knowledge not found")
-    return _to_response(knowledge)
+    return success_response(data=_to_response(knowledge))
 
 
-@router.put("/{knowledge_id}", response_model=KnowledgeResponse)
+@router.put("/{knowledge_id}", response_model=APIResponse[KnowledgeResponse])
 async def update_knowledge(
     knowledge_id: str, update_data: KnowledgeUpdate, db: AsyncSession = Depends(get_db)
 ):
@@ -99,14 +106,14 @@ async def update_knowledge(
     knowledge = await service.update(knowledge_id, update_data)
     if not knowledge:
         raise HTTPException(status_code=404, detail="Knowledge not found")
-    return _to_response(knowledge)
+    return success_response(data=_to_response(knowledge))
 
 
-@router.delete("/{knowledge_id}")
+@router.delete("/{knowledge_id}", response_model=APIResponse)
 async def delete_knowledge(knowledge_id: str, db: AsyncSession = Depends(get_db)):
     """删除知识条目"""
     service = KnowledgeService(db)
     success = await service.delete(knowledge_id)
     if not success:
         raise HTTPException(status_code=404, detail="Knowledge not found")
-    return {"message": "Deleted successfully"}
+    return success_response(message="Deleted successfully")

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.models.response import APIResponse, success_response
 from app.services.ingestion_service import IngestionService
 from app.models.ingestion import (
     IngestRequest,
@@ -15,14 +16,14 @@ from app.models.ingestion import (
 router = APIRouter()
 
 
-@router.post("/ingest", response_model=IngestResponse)
+@router.post("/ingest", response_model=APIResponse[IngestResponse])
 async def ingest_content(request: IngestRequest, db: AsyncSession = Depends(get_db)):
     """统一摄取接口"""
     service = IngestionService(db)
-    return await service.ingest(request)
+    return success_response(data=await service.ingest(request))
 
 
-@router.post("/file")
+@router.post("/file", response_model=APIResponse[IngestResponse])
 async def upload_file(
     file: UploadFile = File(...),
     auto_tag: bool = Form(True),
@@ -41,13 +42,11 @@ async def upload_file(
     )
 
     service = IngestionService(db)
-    return await service.ingest(request)
+    return success_response(data=await service.ingest(request))
 
 
-@router.post("/url", response_model=IngestResponse)
-async def ingest_url(
-    body: UrlIngestRequest, db: AsyncSession = Depends(get_db)
-):
+@router.post("/url", response_model=APIResponse[IngestResponse])
+async def ingest_url(body: UrlIngestRequest, db: AsyncSession = Depends(get_db)):
     """摄取网页 URL"""
     url = str(body.url)
     request = IngestRequest(
@@ -60,10 +59,10 @@ async def ingest_url(
     )
 
     service = IngestionService(db)
-    return await service.ingest(request)
+    return success_response(data=await service.ingest(request))
 
 
-@router.post("/clipboard", response_model=IngestResponse)
+@router.post("/clipboard", response_model=APIResponse[IngestResponse])
 async def ingest_clipboard(
     body: ClipboardIngestRequest, db: AsyncSession = Depends(get_db)
 ):
@@ -76,13 +75,11 @@ async def ingest_clipboard(
     )
 
     service = IngestionService(db)
-    return await service.ingest(request)
+    return success_response(data=await service.ingest(request))
 
 
-@router.post("/voice", response_model=IngestResponse)
-async def ingest_voice(
-    body: VoiceIngestRequest, db: AsyncSession = Depends(get_db)
-):
+@router.post("/voice", response_model=APIResponse[IngestResponse])
+async def ingest_voice(body: VoiceIngestRequest, db: AsyncSession = Depends(get_db)):
     """摄取语音笔记（Base64 编码）"""
     request = IngestRequest(
         source_type=SourceType.VOICE,
@@ -95,4 +92,4 @@ async def ingest_voice(
     )
 
     service = IngestionService(db)
-    return await service.ingest(request)
+    return success_response(data=await service.ingest(request))

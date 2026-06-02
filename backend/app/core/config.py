@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     # Redis 配置（用于缓存和任务队列）
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
 
+    # SMTP 配置
+    smtp_host: str = Field(default="smtp.gmail.com", alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, alias="SMTP_PORT")
+    smtp_username: Optional[str] = Field(default=None, alias="SMTP_USERNAME")
+    smtp_password: Optional[str] = Field(default=None, alias="SMTP_PASSWORD")
+
+    # Tavily API 配置
+    tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
+
     # 加载环境变量
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"

@@ -1,20 +1,31 @@
+"""
+执行节点（增强版）
+
+集成工具注册表，支持重试和降级
+"""
+
 import logging
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.core.agent.state import AgentState, ToolCall, Observation, ObservationType
+from app.core.agent.tools import ToolRegistry
+from app.core.agent.tools.registry import get_tool_registry
+from app.core.agent.tools.base import ToolStatus
 from app.core.agent.llm import get_llm, Message, MessageRole
 
 logger = logging.getLogger(__name__)
 
 
 class ExecutorNode:
-    """执行节点"""
+    """执行节点（增强版）"""
 
-    def __init__(self, tool_registry=None):
-        self.tool_registry = tool_registry  # 第七章实现
+    def __init__(self, tool_registry: Optional[ToolRegistry] = None):
+        self.tool_registry = tool_registry or get_tool_registry()
+        self.llm = get_llm()
 
     async def execute(self, state: AgentState) -> AgentState:
+        """执行节点"""
         logger.info(f"Executing step {state['current_step'] + 1}/{len(state['plan'])}")
 
         if state["current_step"] >= len(state["plan"]):
@@ -23,6 +34,7 @@ class ExecutorNode:
 
         current_action = state["plan"][state["current_step"]]
 
+        # 解析动作类型
         if current_action.startswith("调用"):
             await self._execute_tool_call(state, current_action)
         elif current_action.startswith("生成"):
@@ -34,15 +46,11 @@ class ExecutorNode:
         return state
 
     async def _execute_tool_call(self, state: AgentState, action: str):
-        """执行工具调用"""
-        parts = action.split(":", 1)
-        if len(parts) != 2:
-            tool_name = action.replace("调用", "").strip()
-            tool_args = {"query": state["user_query"]}
-        else:
-            tool_name = parts[0].replace("调用", "").strip()
-            tool_args = {"query": parts[1].strip()}
+        """执行工具调用（带重试和降级）"""
+        # 解析工具名称和参数
+        tool_name, tool_args = self._parse_tool_call(action)
 
+        # 记录工具调用
         tool_call: ToolCall = {
             "tool_name": tool_name,
             "arguments": tool_args,
@@ -52,25 +60,40 @@ class ExecutorNode:
         }
         state["tool_calls"].append(tool_call)
 
-        if self.tool_registry:
-            try:
-                result = await self.tool_registry.execute(tool_name, **tool_args)
-                tool_call["result"] = str(result)[:1000]
-                tool_call["status"] = "success"
-                state["tool_results"][tool_name] = result
-                self._add_observation(state, f"工具 {tool_name} 执行成功", "success")
-            except Exception as e:
-                tool_call["result"] = str(e)
-                tool_call["status"] = "failed"
-                self._add_observation(state, f"工具 {tool_name} 失败: {e}", "error")
+        # 执行工具
+        result = await self.tool_registry.execute(tool_name, max_retries=3, **tool_args)
+
+        tool_call["result"] = (
+            str(result.data)
+            if result.status == ToolStatus.SUCCESS
+            else result.error
+        )
+        tool_call["status"] = (
+            "success" if result.status == ToolStatus.SUCCESS else "failed"
+        )
+
+        if result.status == ToolStatus.SUCCESS:
+            state["tool_results"][tool_name] = result.data
+            self._add_observation(
+                state,
+                f"工具 {tool_name} 执行成功 ({result.execution_time_ms:.0f}ms)",
+                "success",
+            )
         else:
-            tool_call["status"] = "failed"
-            tool_call["result"] = "工具注册表未初始化"
+            self._add_observation(
+                state, f"工具 {tool_name} 执行失败: {result.error}", "error"
+            )
+
+            # 尝试降级策略
+            fallback_result = await self._try_fallback(
+                tool_name, tool_args, result.error or "unknown error"
+            )
+            if fallback_result:
+                state["tool_results"][f"{tool_name}_fallback"] = fallback_result
+                self._add_observation(state, f"工具 {tool_name} 降级成功", "info")
 
     async def _execute_generation(self, state: AgentState, action: str):
         """执行生成任务"""
-        llm = get_llm()
-
         prompt = f"""根据以下信息，{action}
 
 用户问题: {state['user_query']}
@@ -81,28 +104,58 @@ class ExecutorNode:
 请生成符合要求的输出。"""
 
         messages = [Message(role=MessageRole.USER, content=prompt)]
-        response = await llm.invoke(messages)
+        response = await self.llm.invoke(messages)
 
         state["tool_results"][f"generation_{state['current_step']}"] = response.content
         self._add_observation(state, f"生成完成: {response.content[:100]}...", "info")
 
     async def _execute_llm_action(self, state: AgentState, action: str):
         """LLM 执行通用动作"""
-        llm = get_llm()
-
         prompt = f"""任务: {action}
 
 用户问题: {state['user_query']}
 检索知识: {len(state['retrieved_knowledge'])} 条
+观察记录: {len(state.get('observations', []))} 条
 
 请执行这个任务并输出结果。"""
 
         messages = [Message(role=MessageRole.USER, content=prompt)]
-        response = await llm.invoke(messages)
+        response = await self.llm.invoke(messages)
 
         state["tool_results"][f"llm_action_{state['current_step']}"] = response.content
 
+    async def _try_fallback(self, tool_name: str, tool_args: Dict, error: str) -> Any:
+        """尝试降级策略"""
+        # 降级策略1：使用 LLM 模拟
+        if tool_name in ["search", "calendar"]:
+            prompt = f"""工具 {tool_name} 执行失败，错误: {error}
+参数: {tool_args}
+请根据你的知识直接回答用户的需求。"""
+
+            messages = [Message(role=MessageRole.USER, content=prompt)]
+            response = await self.llm.invoke(messages)
+            return {"fallback": True, "response": response.content}
+
+        return None
+
+    def _parse_tool_call(self, action: str) -> tuple:
+        """解析工具调用字符串"""
+        # 格式1: "调用tool_name"
+        # 格式2: "调用tool_name: 参数"
+        # 格式3: "调用tool_name(param=value)"
+
+        parts = action.split(":", 1)
+        tool_name = parts[0].replace("调用", "").strip()
+
+        if len(parts) > 1:
+            tool_args = {"query": parts[1].strip()}
+        else:
+            tool_args = {}
+
+        return tool_name, tool_args
+
     def _format_knowledge(self, knowledge: list) -> str:
+        """格式化知识"""
         if not knowledge:
             return "无"
 
@@ -118,6 +171,7 @@ class ExecutorNode:
     def _add_observation(
         self, state: AgentState, content: str, obs_type: ObservationType
     ):
+        """添加观察记录"""
         obs: Observation = {
             "content": content,
             "type": obs_type,
