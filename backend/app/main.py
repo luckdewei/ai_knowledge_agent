@@ -5,7 +5,15 @@ from fastapi.responses import JSONResponse
 import logging
 
 from app.core.config import settings
-from app.api.routes import health, knowledge, agent, organization, tools, ingestion
+from app.api.routes import (
+    health,
+    insights,
+    knowledge,
+    agent,
+    organization,
+    tools,
+    ingestion,
+)
 from app.core.scheduler import get_scheduler
 
 # 配置日志
@@ -70,6 +78,7 @@ def create_app() -> FastAPI:
     app.include_router(
         organization.router, prefix="/api/organization", tags=["organization"]
     )
+    app.include_router(insights.router, prefix="/api/insights", tags=["insights"])
     # app.include_router(tools.router, prefix="/api/tools", tags=["tools"])
 
     # 全局异常处理
