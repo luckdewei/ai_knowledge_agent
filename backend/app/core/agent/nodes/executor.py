@@ -140,14 +140,29 @@ class ExecutorNode:
 
     def _parse_tool_call(self, action: str) -> tuple:
         """解析工具调用字符串"""
-        # 格式1: "调用tool_name"
-        # 格式2: "调用tool_name: 参数"
-        # 格式3: "调用tool_name(param=value)"
+        alias = {
+            "搜索": "search",
+            "知识库搜索": "search",
+            "待办": "todo",
+            "日历": "calendar",
+            "邮件": "email",
+        }
 
         parts = action.split(":", 1)
-        tool_name = parts[0].replace("调用", "").strip()
+        raw_name = parts[0].replace("调用", "").strip()
+        tool_name = alias.get(raw_name, raw_name)
 
-        if len(parts) > 1:
+        if tool_name == "todo":
+            tool_args = {"action": "list", "status": "pending"}
+        elif tool_name == "calendar":
+            tool_args = {"action": "query", "days": 7}
+        elif tool_name == "search":
+            tool_args = {
+                "query": parts[1].strip() if len(parts) > 1 else "",
+                "source": "both",
+                "top_k": 5,
+            }
+        elif len(parts) > 1:
             tool_args = {"query": parts[1].strip()}
         else:
             tool_args = {}

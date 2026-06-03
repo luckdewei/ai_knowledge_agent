@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import uuid
 from datetime import datetime
 from typing import Any, List, Optional, Tuple, cast
 from sqlalchemy import select, func, and_, or_
@@ -8,15 +9,18 @@ from sqlalchemy.sql.expression import desc
 from app.models.knowledge import Knowledge, Cluster
 from app.models.schemas import KnowledgeCreate, KnowledgeUpdate, SearchRequest
 from app.core.vector.embeddings import embeddings_service
+from app.core.cache import CacheService, cache_key, invalidate_knowledge_caches
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class KnowledgeService:
-    """知识库 CRUD + 向量检索服务"""
+    """知识库 CRUD + 向量检索服务（按租户隔离）"""
 
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, tenant_id: uuid.UUID):
         self.db = db
+        self.tenant_id = tenant_id
 
     @staticmethod
     def compute_content_hash(content: str) -> str:
@@ -39,6 +43,7 @@ class KnowledgeService:
 
         # 3. 创建知识对象
         knowledge = Knowledge(
+            tenant_id=self.tenant_id,
             title=knowledge_in.title,
             content=knowledge_in.content,
             content_hash=content_hash,
@@ -67,6 +72,7 @@ class KnowledgeService:
         await self.db.refresh(knowledge)
 
         logger.info(f"Created knowledge: {knowledge.id}, title={knowledge.title[:50]}")
+        await invalidate_knowledge_caches(self.tenant_id)
         return knowledge
 
     async def create_batch(
@@ -81,7 +87,10 @@ class KnowledgeService:
 
         # 2. 批量去重检查
         hashes = [k.content_hash for k in knowledge_list]
-        stmt = select(Knowledge).where(Knowledge.content_hash.in_(hashes))
+        stmt = select(Knowledge).where(
+            Knowledge.tenant_id == self.tenant_id,
+            Knowledge.content_hash.in_(hashes),
+        )
         result = await self.db.execute(stmt)
         existing_map = {k.content_hash: k for k in result.scalars().all()}
 
@@ -106,6 +115,7 @@ class KnowledgeService:
         knowledge_objs = []
         for i, k in enumerate(new_items):
             knowledge = Knowledge(
+                tenant_id=self.tenant_id,
                 title=k.title,
                 content=k.content,
                 content_hash=k.content_hash,
@@ -127,13 +137,77 @@ class KnowledgeService:
 
     async def get_by_hash(self, content_hash: str) -> Optional[Knowledge]:
         """通过哈希获取"""
-        stmt = select(Knowledge).where(Knowledge.content_hash == content_hash)
+        stmt = select(Knowledge).where(
+            Knowledge.tenant_id == self.tenant_id,
+            Knowledge.content_hash == content_hash,
+        )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_by_source_uri(self, source_uri: str) -> Optional[Knowledge]:
+        """按来源 URL 查找（用于网页重新抓取更新）。"""
+        if not source_uri:
+            return None
+        stmt = (
+            select(Knowledge)
+            .where(
+                Knowledge.tenant_id == self.tenant_id,
+                Knowledge.source_uri == source_uri,
+                Knowledge.source_type == "url",
+            )
+            .order_by(desc(Knowledge.updated_at))
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def replace_from_ingestion(
+        self,
+        knowledge_id: str,
+        *,
+        title: str,
+        content: str,
+        content_hash: str,
+        tags: Optional[List[str]] = None,
+        metadata: Optional[dict] = None,
+    ) -> Optional[Knowledge]:
+        """重新摄取时覆盖正文、哈希与向量。"""
+        kid = uuid.UUID(knowledge_id) if isinstance(knowledge_id, str) else knowledge_id
+        stmt = select(Knowledge).where(
+            Knowledge.id == kid,
+            Knowledge.tenant_id == self.tenant_id,
+        )
+        result = await self.db.execute(stmt)
+        knowledge = result.scalar_one_or_none()
+        if not knowledge:
+            return None
+
+        knowledge.title = title
+        knowledge.content = content
+        knowledge.content_hash = content_hash
+        if tags is not None:
+            knowledge.tags = tags
+        if metadata is not None:
+            knowledge.extra_metadata = metadata
+
+        try:
+            embedding = await embeddings_service.embed_query(content[:2000])
+            knowledge.embedding = cast(Any, embedding)
+        except Exception as e:
+            logger.error(f"Re-embedding failed: {e}")
+
+        await self.db.commit()
+        await self.db.refresh(knowledge)
+        await invalidate_knowledge_caches(self.tenant_id)
+        logger.info(f"Refreshed knowledge from ingestion: {knowledge.id}")
+        return knowledge
+
     async def get_by_id(self, knowledge_id: str) -> Optional[Knowledge]:
         """通过 ID 获取"""
-        stmt = select(Knowledge).where(Knowledge.id == knowledge_id)
+        stmt = select(Knowledge).where(
+            Knowledge.id == knowledge_id,
+            Knowledge.tenant_id == self.tenant_id,
+        )
         result = await self.db.execute(stmt)
         knowledge = result.scalar_one_or_none()
         if knowledge:
@@ -155,11 +229,13 @@ class KnowledgeService:
         query_vector = await embeddings_service.embed_query(request.query)
 
         # 2. 构建过滤条件
-        filters = []
+        filters = [Knowledge.tenant_id == self.tenant_id]
         if request.source_type:
             filters.append(Knowledge.source_type == request.source_type)
         if request.tags:
-            filters.append(Knowledge.tags.overlap(request.tags))
+            filters.append(
+                or_(*[Knowledge.tags.contains([tag]) for tag in request.tags])
+            )
         if request.date_from:
             filters.append(Knowledge.created_at >= request.date_from)
         if request.date_to:
@@ -194,7 +270,10 @@ class KnowledgeService:
         # PostgreSQL 全文搜索
         stmt = (
             select(Knowledge)
-            .where(func.to_tsvector("chinese", Knowledge.content).match(query))
+            .where(
+                Knowledge.tenant_id == self.tenant_id,
+                func.to_tsvector("chinese", Knowledge.content).match(query),
+            )
             .limit(limit)
         )
 
@@ -209,7 +288,10 @@ class KnowledgeService:
 
         stmt = (
             select(Knowledge)
-            .where(Knowledge.created_at >= cutoff)
+            .where(
+                Knowledge.tenant_id == self.tenant_id,
+                Knowledge.created_at >= cutoff,
+            )
             .order_by(desc(Knowledge.created_at))
             .limit(limit)
         )
@@ -223,7 +305,11 @@ class KnowledgeService:
         """时间范围查询（用于趋势分析）"""
         stmt = (
             select(Knowledge)
-            .where(and_(Knowledge.created_at >= start, Knowledge.created_at <= end))
+            .where(
+                Knowledge.tenant_id == self.tenant_id,
+                Knowledge.created_at >= start,
+                Knowledge.created_at <= end,
+            )
             .order_by(Knowledge.created_at)
         )
 
@@ -257,6 +343,7 @@ class KnowledgeService:
 
         await self.db.commit()
         await self.db.refresh(knowledge)
+        await invalidate_knowledge_caches(self.tenant_id)
 
         return knowledge
 
@@ -268,17 +355,28 @@ class KnowledgeService:
 
         await self.db.delete(knowledge)
         await self.db.commit()
+        await invalidate_knowledge_caches(self.tenant_id)
         return True
 
     async def get_stats(self) -> dict:
-        """获取统计信息"""
+        """获取统计信息（Redis 缓存 60s）"""
+        ck = cache_key("stats", "knowledge", str(self.tenant_id))
+        cached = await CacheService.get_json(ck)
+        if cached is not None:
+            return cached
+
         # 总数
-        total_stmt = select(func.count()).select_from(Knowledge)
+        total_stmt = (
+            select(func.count())
+            .select_from(Knowledge)
+            .where(Knowledge.tenant_id == self.tenant_id)
+        )
         total = await self.db.execute(total_stmt)
 
-        # 按来源类型统计
-        type_stmt = select(Knowledge.source_type, func.count().label("count")).group_by(
-            Knowledge.source_type
+        type_stmt = (
+            select(Knowledge.source_type, func.count().label("count"))
+            .where(Knowledge.tenant_id == self.tenant_id)
+            .group_by(Knowledge.source_type)
         )
         type_result = await self.db.execute(type_stmt)
 
@@ -287,14 +385,17 @@ class KnowledgeService:
             select(
                 func.unnest(Knowledge.tags).label("tag"), func.count().label("count")
             )
+            .where(Knowledge.tenant_id == self.tenant_id)
             .group_by("tag")
             .order_by(desc("count"))
             .limit(20)
         )
         tag_result = await self.db.execute(tag_stmt)
 
-        return {
+        stats = {
             "total_knowledge": total.scalar() or 0,
             "by_source_type": {row[0]: row[1] for row in type_result.all()},
             "top_tags": [{"tag": row[0], "count": row[1]} for row in tag_result.all()],
         }
+        await CacheService.set_json(ck, stats, settings.cache_ttl_stats)
+        return stats

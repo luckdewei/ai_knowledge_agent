@@ -14,11 +14,10 @@ import uuid
 
 # ========== Knowledge Schemas ==========
 class KnowledgeBase(BaseModel):
-    """知识条目的公共字段，Create / Response 共用。"""
+    """知识条目的公共字段（不含 source_type，由子类分别约束）。"""
 
     title: str = Field(..., max_length=500)
     content: str
-    source_type: str = Field(..., pattern="^(file|url|clipboard|voice|wechat)$")
     source_uri: Optional[str] = None
     tags: Optional[List[str]] = None
     metadata: Optional[Dict[str, Any]] = None  # 对应 ORM 的 extra_metadata / DB 列 metadata
@@ -27,6 +26,10 @@ class KnowledgeBase(BaseModel):
 class KnowledgeCreate(KnowledgeBase):
     """POST 创建知识时的请求体。"""
 
+    source_type: str = Field(
+        ...,
+        pattern="^(file|url|clipboard|voice|wechat|test|email|agent)$",
+    )
     content_hash: Optional[str] = None  # 可选，服务端也可自行计算用于去重
 
 
@@ -42,6 +45,8 @@ class KnowledgeUpdate(BaseModel):
 class KnowledgeResponse(KnowledgeBase):
     """单条知识的 API 响应，含数据库生成的字段。"""
 
+    # 响应对历史/测试数据放宽校验，避免 DB 中已有非标准 source_type 导致 500
+    source_type: str
     # ORM 字段名为 extra_metadata（metadata 被 SQLAlchemy Base 占用）
     metadata: Optional[Dict[str, Any]] = Field(default=None, validation_alias="extra_metadata")
 

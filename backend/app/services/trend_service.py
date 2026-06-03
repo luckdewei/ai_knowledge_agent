@@ -8,6 +8,7 @@
 """
 
 import logging
+import uuid
 from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime, timedelta
 from collections import defaultdict, Counter
@@ -18,6 +19,9 @@ from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.knowledge import Knowledge
+from app.services.tenant_scope import tenant_knowledge_filter
+from app.core.cache import CacheService, cache_key
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +47,10 @@ class TopicEvolution:
 class TrendAnalysisService:
     """趋势分析服务"""
 
-    def __init__(self, db_session: AsyncSession):
+    def __init__(self, db_session: AsyncSession, tenant_id: uuid.UUID):
         self.db = db_session
+        self.tenant_id = tenant_id
+        self._tk = tenant_knowledge_filter(tenant_id)
 
     async def get_activity_trend(
         self, days: int = 90, interval: str = "week"
@@ -56,6 +62,19 @@ class TrendAnalysisService:
             days: 分析的天数
             interval: 间隔 (day, week, month)
         """
+        ck = cache_key("insights", str(self.tenant_id), "activity", str(days), interval)
+        cached = await CacheService.get_json(ck)
+        if cached is not None:
+            return [
+                TrendPoint(
+                    date=p["date"],
+                    count=p["count"],
+                    tags=p.get("tags", []),
+                    top_keywords=p.get("top_keywords", []),
+                )
+                for p in cached
+            ]
+
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
 
@@ -67,49 +86,63 @@ class TrendAnalysisService:
         else:
             date_format = "%Y-%m"
 
+        # 不用 array_agg(tags)：PostgreSQL 对可为 NULL 的数组列聚合会报
+        # ArraySubscriptError: cannot accumulate arrays of different dimensionality
         stmt = (
             select(
-                func.date_trunc(interval, Knowledge.created_at).label("date"),
-                func.count().label("count"),
-                func.array_agg(Knowledge.tags).label("all_tags"),
+                func.date_trunc(interval, Knowledge.created_at).label("period"),
+                Knowledge.tags,
             )
             .where(
                 and_(
-                    Knowledge.created_at >= start_date, Knowledge.created_at <= end_date
+                    self._tk,
+                    Knowledge.created_at >= start_date,
+                    Knowledge.created_at <= end_date,
                 )
             )
-            .group_by("date")
-            .order_by("date")
+            .order_by("period")
         )
 
         result = await self.db.execute(stmt)
         rows = result.all()
 
+        period_stats: dict[datetime, dict[str, Any]] = defaultdict(
+            lambda: {"count": 0, "tags": []}
+        )
+        for period, tags in rows:
+            bucket = period_stats[period]
+            bucket["count"] += 1
+            if tags:
+                bucket["tags"].extend(tags)
+
         trend_points = []
-        for row in rows:
-            # 收集该时间段的所有标签
-            all_tags = []
-            for tags in row[2]:
-                if tags:
-                    all_tags.extend(tags)
-
-            # 统计高频标签
-            tag_counter = Counter(all_tags)
-            top_tags = [tag for tag, _ in tag_counter.most_common(5)]
-
+        for period in sorted(period_stats.keys()):
+            data = period_stats[period]
+            top_tags = [tag for tag, _ in Counter(data["tags"]).most_common(5)]
             trend_points.append(
                 TrendPoint(
-                    date=(
-                        row[0].strftime("%Y-%m-%d")
-                        if interval == "day"
-                        else row[0].strftime("%Y-%m-%d")
-                    ),
-                    count=row[1],
+                    date=period.strftime(date_format)
+                    if interval != "week"
+                    else period.strftime("%Y-%m-%d"),
+                    count=data["count"],
                     tags=top_tags,
-                    top_keywords=top_tags,  # 简化，可用关键词提取
+                    top_keywords=top_tags,
                 )
             )
 
+        await CacheService.set_json(
+            ck,
+            [
+                {
+                    "date": p.date,
+                    "count": p.count,
+                    "tags": p.tags,
+                    "top_keywords": p.top_keywords,
+                }
+                for p in trend_points
+            ],
+            settings.cache_ttl_insights,
+        )
         return trend_points
 
     async def get_tag_trend(
@@ -129,6 +162,7 @@ class TrendAnalysisService:
             )
             .where(
                 and_(
+                    self._tk,
                     Knowledge.created_at >= start_date,
                     Knowledge.created_at <= end_date,
                     Knowledge.tags.contains([tag]),  # 包含该标签
@@ -221,6 +255,7 @@ class TrendAnalysisService:
             )
             .where(
                 and_(
+                    self._tk,
                     Knowledge.created_at >= start_date,
                     Knowledge.created_at <= end_date,
                     Knowledge.tags.is_not(None),
@@ -252,7 +287,7 @@ class TrendAnalysisService:
             select(
                 Knowledge.created_at, Knowledge.title, Knowledge.content, Knowledge.tags
             )
-            .where(and_(Knowledge.created_at >= start_date, or_(*conditions)))
+            .where(and_(self._tk, Knowledge.created_at >= start_date, or_(*conditions)))
             .order_by(Knowledge.created_at)
         )
 

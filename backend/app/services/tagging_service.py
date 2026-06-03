@@ -68,8 +68,9 @@ class TaggingService:
         "管理": ["项目管理", "团队管理", "OKR", "KPI", "领导力"],
     }
 
-    def __init__(self, db_session: AsyncSession):
+    def __init__(self, db_session: AsyncSession, tenant_id):
         self.db = db_session
+        self.tenant_id = tenant_id
 
     async def generate_tags(
         self, content: str, title: str = "", max_tags: int = 5, method: str = "llm"

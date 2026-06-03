@@ -3,6 +3,7 @@ import re
 import logging
 
 from app.models.ingestion import ContentMetadata
+from app.core.ingestion.markdown_format import plain_text_to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class ClipboardExtractor:
             raise ValueError("Empty clipboard content")
 
         # 1. 清理内容
-        cleaned_content = self._clean_content(content)
+        cleaned_content = plain_text_to_markdown(self._clean_content(content))
 
         # 2. 限制长度
         if len(cleaned_content) > self.max_length:

@@ -27,13 +27,13 @@ class PlannerNode:
 - 分析：发现知识间的隐含联系、趋势分析
 
 ## 输出格式（只返回 JSON）
-{
+{{
     "reasoning": "一步步的思考过程...",
     "intent": "query|search|organize|generate|schedule|analyze",
     "plan": ["步骤1", "步骤2", "步骤3"],
     "needs_search": true/false,
     "needs_tools": ["tool1", "tool2"]
-}
+}}
 
 ## 用户请求
 {query}
@@ -48,6 +48,11 @@ class PlannerNode:
         """执行规划节点"""
         logger.info(f"Planning for: {state['user_query'][:50]}...")
 
+        heuristic = self._heuristic_plan(state["user_query"])
+        if heuristic:
+            self._apply_plan(state, heuristic)
+            return state
+
         prompt = self.PLANNER_PROMPT.format(query=state["user_query"])
 
         try:
@@ -55,13 +60,7 @@ class PlannerNode:
             response = await self.llm.invoke(messages)
 
             plan_data = self._parse_response(response.content)
-
-            # 更新状态
-            state["reasoning"] = plan_data.get("reasoning", "")
-            state["intent"] = AgentIntent(plan_data.get("intent", "unknown"))
-            state["plan"] = plan_data.get("plan", [])
-            state["search_queries"] = [state["user_query"]]
-
+            self._apply_plan(state, plan_data)
             self._add_observation(
                 state, f"规划完成，意图: {state['intent'].value}", "info"
             )
@@ -69,10 +68,57 @@ class PlannerNode:
         except Exception as e:
             logger.error(f"Planning failed: {e}")
             state["error"] = str(e)
-            state["plan"] = ["检索相关知识", "生成回答"]
-            state["reasoning"] = f"自动规划（解析失败: {e}）"
+            self._apply_plan(
+                state,
+                {
+                    "reasoning": f"自动规划（解析失败: {e}）",
+                    "intent": "query",
+                    "plan": ["生成回答"],
+                    "needs_search": False,
+                    "needs_tools": [],
+                },
+            )
 
         return state
+
+    def _heuristic_plan(self, query: str) -> dict | None:
+        from app.core.agent.fast_path import classify_query
+
+        mode = classify_query(query)
+        if mode == "chitchat":
+            return {
+                "reasoning": "寒暄类问题，无需检索知识库",
+                "intent": "query",
+                "plan": ["直接回答"],
+                "needs_search": False,
+                "needs_tools": [],
+            }
+        if mode == "knowledge":
+            return {
+                "reasoning": "知识问答，检索后回答",
+                "intent": "search",
+                "plan": ["检索相关知识", "生成回答"],
+                "needs_search": True,
+                "needs_tools": [],
+            }
+        return None
+
+    def _parse_intent(self, raw: str) -> AgentIntent:
+        try:
+            return AgentIntent(raw)
+        except ValueError:
+            return AgentIntent.UNKNOWN
+
+    def _apply_plan(self, state: AgentState, plan_data: dict) -> None:
+        needs_search = plan_data.get("needs_search", True)
+        if isinstance(needs_search, str):
+            needs_search = needs_search.lower() in ("true", "1", "yes")
+
+        state["reasoning"] = plan_data.get("reasoning", "")
+        state["intent"] = self._parse_intent(plan_data.get("intent", "query"))
+        state["plan"] = plan_data.get("plan", [])
+        state["search_queries"] = [state["user_query"]] if needs_search else []
+        state["memory_context"]["needs_tools"] = plan_data.get("needs_tools", [])
 
     def _parse_response(self, content: str) -> Dict[str, Any]:
         """解析 LLM 响应，提取 JSON"""

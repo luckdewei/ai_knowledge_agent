@@ -6,6 +6,7 @@
 """
 
 import logging
+import uuid
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -16,6 +17,7 @@ from app.services.tagging_service import TaggingService
 from app.services.summary_service import SummaryService
 from app.services.deduplication_service import DeduplicationService
 from app.models.knowledge import Knowledge
+from app.services.tenant_scope import tenant_knowledge_filter
 from app.models.schemas import KnowledgeUpdate
 
 logger = logging.getLogger(__name__)
@@ -24,12 +26,14 @@ logger = logging.getLogger(__name__)
 class OrganizationService:
     """知识组织服务"""
 
-    def __init__(self, db_session: AsyncSession):
+    def __init__(self, db_session: AsyncSession, tenant_id: uuid.UUID):
         self.db = db_session
-        self.clustering = ClusteringService(db_session)
-        self.tagging = TaggingService(db_session)
+        self.tenant_id = tenant_id
+        self._tk = tenant_knowledge_filter(tenant_id)
+        self.clustering = ClusteringService(db_session, tenant_id)
+        self.tagging = TaggingService(db_session, tenant_id)
         self.summary = SummaryService()
-        self.dedup = DeduplicationService(db_session)
+        self.dedup = DeduplicationService(db_session, tenant_id)
 
     async def organize_untagged(self, limit: int = 50) -> dict:
         """
@@ -37,7 +41,9 @@ class OrganizationService:
         """
         from sqlalchemy import select
 
-        stmt = select(Knowledge).where(Knowledge.tags.is_(None)).limit(limit)
+        stmt = (
+            select(Knowledge).where(self._tk, Knowledge.tags.is_(None)).limit(limit)
+        )
 
         result = await self.db.execute(stmt)
         untagged = result.scalars().all()
@@ -79,7 +85,11 @@ class OrganizationService:
         from sqlalchemy import select
 
         # 查找没有摘要且内容较长的知识
-        stmt = select(Knowledge).where(Knowledge.extra_metadata.is_(None)).limit(limit)
+        stmt = (
+            select(Knowledge)
+            .where(self._tk, Knowledge.extra_metadata.is_(None))
+            .limit(limit)
+        )
 
         result = await self.db.execute(stmt)
         items = result.scalars().all()

@@ -5,7 +5,7 @@
 向量字段使用 pgvector（1024 维，与 BGE 嵌入模型一致）。
 """
 
-from sqlalchemy import UUID, String, Text, DateTime, Float, Index, func
+from sqlalchemy import UUID, String, Text, DateTime, Float, Index, ForeignKey, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,16 +26,22 @@ class Knowledge(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[Optional[str]] = mapped_column(
-        String(64), unique=True, nullable=True, index=True
-    )  # 内容哈希，用于入库去重
+        String(64), nullable=True, index=True
+    )  # 内容哈希，租户内去重
     source_type: Mapped[str] = mapped_column(
         String(50), nullable=False, index=True
     )  # 'file' | 'url' | 'clipboard' | 'voice'
     source_uri: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
-    tags: Mapped[Optional[List[str]]] = mapped_column(ARRAY(String), nullable=True)
+    tags: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)
     embedding: Mapped[Optional[Vector]] = mapped_column(
         VECTOR(1024), nullable=True
     )  # 语义向量，供 HNSW 近似最近邻检索
@@ -59,6 +65,7 @@ class Knowledge(Base):
     __table_args__ = (
         Index("idx_knowledge_source_created", "source_type", "created_at"),
         Index("idx_knowledge_tags_gin", "tags", postgresql_using="gin"),
+        UniqueConstraint("tenant_id", "content_hash", name="knowledge_tenant_content_hash_uq"),
     )
 
     def to_dict(self) -> dict:
@@ -129,6 +136,12 @@ class AgentMemory(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True
+    )
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     memory_type: Mapped[str] = mapped_column(
         String(50), nullable=False
     )  # 'short_term', 'long_term', 'episodic'
@@ -147,6 +160,8 @@ class AgentMemory(Base):
         """转换为字典，用于 API 响应"""
         return {
             "id": str(self.id),
+            "tenant_id": str(self.tenant_id) if self.tenant_id else None,
+            "user_id": str(self.user_id) if self.user_id else None,
             "memory_type": self.memory_type,
             "content": self.content,
             "context": self.context or {},

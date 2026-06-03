@@ -1,6 +1,7 @@
 """待办事项模型"""
 
-from sqlalchemy import String, Boolean, DateTime, Text
+from sqlalchemy import String, Boolean, DateTime, Text, ForeignKey, func
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
 import uuid
@@ -16,15 +17,25 @@ class TodoItem(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=True)
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
     priority: Mapped[int] = mapped_column(default=1)  # 1-5, 5最高
-    due_date: Mapped[datetime] = mapped_column(DateTime, nullable=True)
-    category: Mapped[str] = mapped_column(String(50), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    due_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now, onupdate=datetime.now
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
     def to_dict(self) -> dict:

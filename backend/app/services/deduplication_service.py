@@ -31,8 +31,15 @@ class DeduplicationService:
     # MinHash 配置
     MINHASH_PERMUTATIONS = 128
 
-    def __init__(self, db_session: AsyncSession):
+    def __init__(self, db_session: AsyncSession, tenant_id):
+        import uuid as _uuid
+        from app.services.tenant_scope import tenant_knowledge_filter
+
         self.db = db_session
+        self.tenant_id = tenant_id
+        self._tk = tenant_knowledge_filter(
+            tenant_id if isinstance(tenant_id, _uuid.UUID) else _uuid.UUID(str(tenant_id))
+        )
 
     @staticmethod
     def compute_hash(content: str) -> str:
@@ -84,7 +91,11 @@ class DeduplicationService:
             相似组列表
         """
         # 获取有向量的知识
-        stmt = select(Knowledge).where(Knowledge.embedding.is_not(None)).limit(limit)
+        stmt = (
+            select(Knowledge)
+            .where(self._tk, Knowledge.embedding.is_not(None))
+            .limit(limit)
+        )
 
         result = await self.db.execute(stmt)
         knowledge_list = list(result.scalars().all())
@@ -186,7 +197,7 @@ class DeduplicationService:
             return []
 
         # 获取知识详情
-        stmt = select(Knowledge).where(Knowledge.id.in_(ids))
+        stmt = select(Knowledge).where(self._tk, Knowledge.id.in_(ids))
         result = await self.db.execute(stmt)
         items = list(result.scalars().all())
 
@@ -202,7 +213,7 @@ class DeduplicationService:
 
         if not dry_run:
             for remove_id in to_remove:
-                stmt = select(Knowledge).where(Knowledge.id == remove_id)
+                stmt = select(Knowledge).where(self._tk, Knowledge.id == remove_id)
                 result = await self.db.execute(stmt)
                 to_delete = result.scalar_one_or_none()
                 if to_delete:

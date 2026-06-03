@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 class RetrieverNode:
     """检索节点"""
 
-    def __init__(self, db_session: AsyncSession):
+    def __init__(self, db_session: AsyncSession, tenant_id):
         self.db = db_session
-        self.knowledge_service = KnowledgeService(db_session)
+        self.knowledge_service = KnowledgeService(db_session, tenant_id)
 
     async def execute(self, state: AgentState) -> AgentState:
         logger.info(f"Retrieving for intent: {state['intent'].value}")
@@ -30,8 +30,7 @@ class RetrieverNode:
         else:
             await self._retrieve_semantic(state)
 
-        # 发现隐含联系
-        if len(state["retrieved_knowledge"]) >= 2:
+        if intent == AgentIntent.ANALYZE and len(state["retrieved_knowledge"]) >= 2:
             await self._discover_connections(state)
 
         self._add_observation(
@@ -44,7 +43,7 @@ class RetrieverNode:
         """语义向量检索"""
         query = state["user_query"]
 
-        search_request = SearchRequest(query=query, top_k=10, min_similarity=0.6)
+        search_request = SearchRequest(query=query, top_k=5, min_similarity=0.58)
         results, _ = await self.knowledge_service.search_semantic(search_request)
 
         state["retrieved_knowledge"] = [

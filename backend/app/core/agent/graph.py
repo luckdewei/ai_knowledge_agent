@@ -34,12 +34,32 @@ def route_after_planner(
     - 需要执行工具：进入执行节点
     - 可以直接回答：进入响应节点
     """
-    if state.get("search_queries") and len(state["search_queries"]) > 0:
-        return "retriever"
-    elif state.get("plan") and any("调用" in step for step in state["plan"]):
+    plan = state.get("plan") or []
+    if state.get("plan") and any("调用" in step for step in plan):
         return "executor"
-    else:
-        return "responder"
+    if state.get("search_queries"):
+        return "retriever"
+    return "responder"
+
+
+def route_after_retriever(
+    state: AgentState,
+) -> Literal["reasoner", "responder"]:
+    """检索后：复杂任务才走推理链，普通问答直接生成回复。"""
+    from app.core.agent.state import AgentIntent
+
+    intent = state.get("intent")
+    if intent in (
+        AgentIntent.ORGANIZE,
+        AgentIntent.GENERATE,
+        AgentIntent.SCHEDULE,
+        AgentIntent.ANALYZE,
+    ):
+        return "reasoner"
+    tools = (state.get("memory_context") or {}).get("needs_tools") or []
+    if tools:
+        return "reasoner"
+    return "responder"
 
 
 def route_after_reflector(state: AgentState) -> Literal["executor", "responder"]:
@@ -58,14 +78,17 @@ def route_after_reflector(state: AgentState) -> Literal["executor", "responder"]
 class PersonalKnowledgeAgent:
     """个人知识 Agent"""
 
-    def __init__(self, db_session):
+    def __init__(self, db_session, tenant_id):
         self.db_session = db_session
+        self.tenant_id = tenant_id
+
+        from app.core.agent.tools.registry import get_tool_registry
 
         # 初始化节点
         self.planner = PlannerNode()
-        self.retriever = RetrieverNode(db_session)
+        self.retriever = RetrieverNode(db_session, tenant_id)
         self.reasoner = ReasonerNode()
-        self.executor = ExecutorNode()  # tool_registry 后续注入
+        self.executor = ExecutorNode(get_tool_registry())
         self.reflector = ReflectorNode()
         self.responder = ResponderNode()
 
@@ -99,8 +122,11 @@ class PersonalKnowledgeAgent:
             },
         )
 
-        # 固定流转
-        workflow.add_edge("retriever", "reasoner")
+        workflow.add_conditional_edges(
+            "retriever",
+            route_after_retriever,
+            {"reasoner": "reasoner", "responder": "responder"},
+        )
         workflow.add_edge("reasoner", "executor")
         workflow.add_edge("executor", "reflector")
 
@@ -119,37 +145,120 @@ class PersonalKnowledgeAgent:
 
         return workflow.compile(checkpointer=self.memory)
 
-    async def run(self, user_query: str, session_id: str = "default") -> str:
-        """
-        运行 Agent
+    async def run(
+        self,
+        user_query: str,
+        session_id: str = "default",
+        *,
+        user_id=None,
+        use_memory: bool = True,
+    ) -> str:
+        """运行 Agent（优先快速路径）。"""
+        from app.core.agent.fast_path import (
+            classify_query,
+            run_chitchat,
+            run_knowledge,
+            run_with_tools,
+        )
 
-        Args:
-            user_query: 用户输入
-            session_id: 会话 ID（用于记忆持久化）
+        mode = classify_query(user_query)
+        if mode == "chitchat":
+            logger.info("Agent fast path: chitchat")
+            return await run_chitchat(
+                self.db_session,
+                user_query,
+                self.tenant_id,
+                session_id=session_id,
+                user_id=user_id,
+                use_memory=use_memory,
+            )
+        if mode == "tools":
+            logger.info("Agent fast path: tools")
+            return await run_with_tools(
+                self.db_session,
+                user_query,
+                self.tenant_id,
+                session_id=session_id,
+                user_id=user_id,
+                use_memory=use_memory,
+            )
+        if mode == "knowledge":
+            logger.info("Agent fast path: knowledge")
+            return await run_knowledge(
+                self.db_session,
+                user_query,
+                self.tenant_id,
+                session_id=session_id,
+                user_id=user_id,
+                use_memory=use_memory,
+            )
 
-        Returns:
-            Agent 的最终响应
-        """
-        # 创建初始状态
         initial_state = create_initial_state(user_query, session_id)
-
-        # 配置
         config: RunnableConfig = {"configurable": {"thread_id": session_id}}
-
-        # 执行图
         final_state = await self.graph.ainvoke(initial_state, config=config)
-
-        # 返回最终响应
         return final_state.get("final_response", "抱歉，我无法生成回复。")
 
-    async def stream(self, user_query: str, session_id: str = "default"):
-        """
-        流式运行 Agent（实时输出思考过程）
+    async def stream_tokens(
+        self,
+        user_query: str,
+        session_id: str = "default",
+        *,
+        user_id=None,
+        use_memory: bool = True,
+    ):
+        """流式输出：状态事件 dict 或文本 token。"""
+        from app.core.agent.fast_path import (
+            classify_query,
+            stream_chitchat,
+            stream_knowledge,
+            stream_with_tools,
+        )
 
-        Yields: 每个节点的输出
-        """
+        mode = classify_query(user_query)
+        if mode == "chitchat":
+            async for token in stream_chitchat(
+                self.db_session,
+                user_query,
+                self.tenant_id,
+                session_id=session_id,
+                user_id=user_id,
+                use_memory=use_memory,
+            ):
+                yield token
+            return
+        if mode == "tools":
+            async for item in stream_with_tools(
+                self.db_session,
+                user_query,
+                self.tenant_id,
+                session_id=session_id,
+                user_id=user_id,
+                use_memory=use_memory,
+            ):
+                yield item
+            return
+        if mode == "knowledge":
+            async for token in stream_knowledge(
+                self.db_session,
+                user_query,
+                self.tenant_id,
+                session_id=session_id,
+                user_id=user_id,
+                use_memory=use_memory,
+            ):
+                yield token
+            return
+
+        yield {"type": "status", "content": "正在深度推理（耗时较长）…"}
+        text = await self.run(user_query, session_id)
+        if text:
+            chunk_size = 40
+            for i in range(0, len(text), chunk_size):
+                yield text[i : i + chunk_size]
+
+    async def stream(self, user_query: str, session_id: str = "default"):
+        """流式运行 LangGraph 节点事件（调试用）。"""
         initial_state = create_initial_state(user_query, session_id)
         config: RunnableConfig = {"configurable": {"thread_id": session_id}}
-
         async for event in self.graph.astream(initial_state, config=config):
             yield event

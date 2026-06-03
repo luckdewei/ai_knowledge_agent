@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
@@ -14,10 +15,14 @@ from app.api.routes import (
     organization,
     tools,
     ingestion,
+    settings as settings_routes,
+    auth,
 )
 from app.core.scheduler import get_scheduler
 from app.core.agent.tools.init_tools import init_tools
 from app.core.database import engine, AsyncSessionLocal
+from app.core.redis_client import init_redis, close_redis
+from app.core.runtime_settings import init_runtime_settings
 
 # 配置日志
 logging.basicConfig(
@@ -25,6 +30,28 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+_VALIDATION_FIELD_LABELS = {
+    "username": "账号",
+    "password": "密码",
+}
+
+
+def _format_validation_errors(errors: list) -> str:
+    parts: list[str] = []
+    for err in errors:
+        loc = err.get("loc") or ()
+        field = loc[-1] if loc else ""
+        label = _VALIDATION_FIELD_LABELS.get(str(field), str(field) or "参数")
+        err_type = err.get("type", "")
+        if err_type == "string_too_short":
+            min_len = (err.get("ctx") or {}).get("min_length", "")
+            parts.append(f"{label}至少 {min_len} 个字符")
+        elif err_type == "missing":
+            parts.append(f"{label}为必填项")
+        else:
+            parts.append(f"{label}格式不正确")
+    return "；".join(parts) if parts else "请求参数校验失败"
 
 
 @asynccontextmanager
@@ -36,13 +63,15 @@ async def lifespan(app: FastAPI):
     """
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
 
+    init_runtime_settings()
+    await init_redis()
+
     # Startup: 这里会初始化数据库连接池、加载 Agent 等
     # await init_database()
     # await init_agent()
 
     # 初始化工具注册表
-    async with AsyncSessionLocal() as session:
-        await init_tools(session)
+    await init_tools(None, None)
 
     # 启动定时调度器
     scheduler = get_scheduler()
@@ -52,7 +81,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown: 清理资源
     scheduler.shutdown()
-    # 关闭数据库连接
+    await close_redis()
     await engine.dispose()
     logger.info("Shutting down application")
 
@@ -87,6 +116,20 @@ def create_app() -> FastAPI:
     )
     app.include_router(insights.router, prefix="/api/insights", tags=["insights"])
     app.include_router(tools.router, prefix="/api/tools", tags=["tools"])
+    app.include_router(
+        settings_routes.router, prefix="/api/settings", tags=["settings"]
+    )
+    app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ):
+        message = _format_validation_errors(exc.errors())
+        return JSONResponse(
+            status_code=422,
+            content=error_response(code=422, message=message, detail=message).model_dump(),
+        )
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):

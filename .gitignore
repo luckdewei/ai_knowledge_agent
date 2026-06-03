@@ -8,6 +8,7 @@ venv/
 .env
 .env.*
 !.env.example
+backend/data/runtime_settings.json
 *.log
 
 # Node
@@ -19,3 +20,5 @@ dist/
 .vscode/
 .idea/
 *.swp
+
+.pnpm-store/

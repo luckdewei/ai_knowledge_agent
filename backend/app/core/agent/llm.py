@@ -258,17 +258,33 @@ class MockLLM(BaseLLM):
 _llm_instance: Optional[BaseLLM] = None
 
 
-def get_llm(use_mock: bool = False) -> BaseLLM:
+_llm_fast_instance: Optional[BaseLLM] = None
+
+
+def get_llm(use_mock: bool = False, *, fast: bool = False) -> BaseLLM:
     """
     获取 LLM 实例（单例模式）
 
     Args:
         use_mock: 是否使用 Mock 模式（用于测试）
+        fast: 对话快速路径（更小 max_tokens、更短超时）
 
     Returns:
         LLM 实例
     """
-    global _llm_instance
+    global _llm_instance, _llm_fast_instance
+
+    if fast:
+        if _llm_fast_instance is None:
+            if use_mock or not settings.deepseek_api_key:
+                _llm_fast_instance = MockLLM()
+            else:
+                _llm_fast_instance = DeepSeekLLM(
+                    max_tokens=1536,
+                    temperature=0.6,
+                    timeout=45.0,
+                )
+        return _llm_fast_instance
 
     if _llm_instance is None:
         if use_mock or not settings.deepseek_api_key:
@@ -283,5 +299,6 @@ def get_llm(use_mock: bool = False) -> BaseLLM:
 
 def reset_llm():
     """重置 LLM 实例（用于测试）"""
-    global _llm_instance
+    global _llm_instance, _llm_fast_instance
     _llm_instance = None
+    _llm_fast_instance = None

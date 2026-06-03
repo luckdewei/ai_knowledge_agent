@@ -40,8 +40,15 @@ def _embedding_to_list(embedding: Any) -> List[float]:
 class ClusteringService:
     """知识聚类服务"""
 
-    def __init__(self, db_session: AsyncSession):
+    def __init__(self, db_session: AsyncSession, tenant_id):
+        import uuid as _uuid
+        from app.services.tenant_scope import tenant_knowledge_filter
+
         self.db = db_session
+        self.tenant_id = tenant_id
+        self._tk = tenant_knowledge_filter(
+            tenant_id if isinstance(tenant_id, _uuid.UUID) else _uuid.UUID(str(tenant_id))
+        )
 
     async def get_embeddings_for_clustering(
         self, limit: int = 1000, min_embedding_exists: bool = True
@@ -55,7 +62,7 @@ class ClusteringService:
         # 查询有向量的知识
         stmt = (
             select(Knowledge)
-            .where(Knowledge.embedding.is_not(None))
+            .where(self._tk, Knowledge.embedding.is_not(None))
             .order_by(Knowledge.created_at.desc())
             .limit(limit)
         )

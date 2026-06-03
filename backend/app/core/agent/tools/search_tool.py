@@ -4,25 +4,31 @@
 支持网络搜索和知识库搜索
 """
 
+import asyncio
 import logging
-from typing import Dict, List
-
-import httpx
+from typing import Dict, List, Optional, Tuple, Any
 
 from .base import BaseTool, ToolResult, ToolStatus, ToolParameter
-from app.core.config import settings
+from .web_search import tavily_web_search
 from app.services.knowledge_service import KnowledgeService
 from app.models.schemas import SearchRequest
 
 logger = logging.getLogger(__name__)
 
+KB_SEMANTIC_TIMEOUT_SEC = 10.0
+WEB_SEARCH_TIMEOUT_SEC = 22.0
+
 
 class SearchTool(BaseTool):
     """搜索工具"""
 
-    def __init__(self, db_session=None):
+    def __init__(self, db_session=None, tenant_id=None):
         self.db_session = db_session
-        self.knowledge_service = KnowledgeService(db_session) if db_session else None
+        self.knowledge_service = (
+            KnowledgeService(db_session, tenant_id)
+            if db_session and tenant_id
+            else None
+        )
 
     @property
     def name(self) -> str:
@@ -72,15 +78,27 @@ class SearchTool(BaseTool):
             knowledge_results = await self._search_knowledge(query, top_k)
             results["knowledge"] = knowledge_results
 
-        # 网络搜索
+        web_error: Optional[str] = None
         if source in ["web", "both"]:
-            web_results = await self._search_web(query, top_k)
+            web_results, web_error = await self._search_web(query, top_k)
             results["web"] = web_results
+
+        meta = {"query": query, "source": source}
+        if web_error:
+            meta["web_error"] = web_error
+
+        if source == "web" and web_error and not results["web"]:
+            return ToolResult(
+                status=ToolStatus.FAILED,
+                data=results,
+                error=web_error,
+                metadata=meta,
+            )
 
         return ToolResult(
             status=ToolStatus.SUCCESS,
             data=results,
-            metadata={"query": query, "source": source},
+            metadata=meta,
         )
 
     async def _search_knowledge(self, query: str, top_k: int) -> list:
@@ -89,7 +107,14 @@ class SearchTool(BaseTool):
             return []
 
         search_request = SearchRequest(query=query, top_k=top_k, min_similarity=0.5)
-        results, _ = await self.knowledge_service.search_semantic(search_request)
+        try:
+            results, _ = await asyncio.wait_for(
+                self.knowledge_service.search_semantic(search_request),
+                timeout=KB_SEMANTIC_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Knowledge semantic search timed out")
+            return []
 
         return [
             {
@@ -102,52 +127,12 @@ class SearchTool(BaseTool):
             for k, score in results
         ]
 
-    async def _search_web(self, query: str, top_k: int) -> list:
-        """网络搜索"""
-        # 使用 Tavily API 或自定义搜索
-        tavily_key = settings.tavily_api_key
+    async def _search_web(
+        self, query: str, top_k: int
+    ) -> Tuple[list, Optional[str]]:
+        """网络搜索，返回 (结果列表, 错误信息)。"""
+        from app.core.agent.knowledge_gap import optimize_web_query
 
-        if not tavily_key:
-            logger.warning("TAVILY_API_KEY not set, using mock results")
-            return self._mock_web_search(query, top_k)
-
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    "https://api.tavily.com/search",
-                    json={
-                        "api_key": tavily_key,
-                        "query": query,
-                        "search_depth": "basic",
-                        "max_results": top_k,
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
-
-                return [
-                    {
-                        "type": "web",
-                        "title": r.get("title"),
-                        "url": r.get("url"),
-                        "content": r.get("content")[:300],
-                        "score": r.get("score"),
-                    }
-                    for r in data.get("results", [])
-                ]
-        except Exception as e:
-            logger.error(f"Web search failed: {e}")
-            return self._mock_web_search(query, top_k)
-
-    def _mock_web_search(self, query: str, top_k: int) -> list:
-        """模拟搜索结果（用于测试）"""
-        return [
-            {
-                "type": "web",
-                "title": f"关于 {query} 的搜索结果 {i+1}",
-                "url": f"https://example.com/result/{i+1}",
-                "content": f"这是关于 {query} 的模拟搜索结果内容...",
-                "score": 1.0 - i * 0.1,
-            }
-            for i in range(min(top_k, 3))
-        ]
+        return await tavily_web_search(
+            optimize_web_query(query), top_k, timeout=WEB_SEARCH_TIMEOUT_SEC
+        )

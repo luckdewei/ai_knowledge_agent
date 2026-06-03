@@ -5,6 +5,7 @@
 """
 
 import logging
+import os
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,11 +15,14 @@ from .calendar_tool import CalendarTool
 from .todo_tool import TodoTool
 from .email_tool import EmailTool
 from .search_tool import SearchTool
+from .save_knowledge_tool import SaveKnowledgeTool
 
 logger = logging.getLogger(__name__)
 
 
-async def init_tools(db_session: Optional[AsyncSession] = None):
+async def init_tools(
+    db_session: Optional[AsyncSession] = None, tenant_id=None
+):
     """
     初始化并注册所有工具
 
@@ -27,31 +31,37 @@ async def init_tools(db_session: Optional[AsyncSession] = None):
     """
     registry = get_tool_registry()
 
-    # 注册日历工具（需要 Google Calendar 凭证）
-    try:
-        registry.register(CalendarTool(), rate_limit=30)  # 每分钟30次
-        logger.info("CalendarTool registered")
-    except Exception as e:
-        logger.warning(f"Failed to register CalendarTool: {e}")
+    # 日历工具需 credentials.json，缺失时跳过以免拖慢每次请求
+    creds_path = os.environ.get("GOOGLE_CREDENTIALS_PATH", "credentials.json")
+    if os.path.isfile(creds_path) or os.path.isfile("token.json"):
+        try:
+            registry.register(CalendarTool(credentials_path=creds_path), rate_limit=30)
+            logger.info("CalendarTool registered")
+        except Exception as e:
+            logger.warning(f"Failed to register CalendarTool: {e}")
+    else:
+        logger.debug("CalendarTool skipped: no Google credentials")
 
-    # 注册待办工具（需要数据库）
-    if db_session:
-        registry.register(TodoTool(db_session), rate_limit=60)
-        logger.info("TodoTool registered")
+    if db_session and tenant_id:
+        registry.register(TodoTool(db_session, tenant_id), rate_limit=60)
+        registry.register(SearchTool(db_session, tenant_id), rate_limit=30)
+        registry.register(SaveKnowledgeTool(db_session, tenant_id), rate_limit=30)
+        logger.info("Todo, Search & SaveKnowledge tools registered with db session")
 
-    # 注册邮件工具
     try:
         registry.register(EmailTool(), rate_limit=20)
         logger.info("EmailTool registered")
     except Exception as e:
         logger.warning(f"Failed to register EmailTool: {e}")
 
-    # 注册搜索工具（需要数据库）
-    if db_session:
-        registry.register(SearchTool(db_session), rate_limit=30)
-        logger.info("SearchTool registered")
-
     logger.info(f"Tool registry initialized with {len(registry.list_tools())} tools")
+
+
+async def ensure_tools_initialized(
+    db_session: Optional[AsyncSession] = None, tenant_id=None
+):
+    """每次请求前确保工具已注册（数据库类工具绑定当前 session）。"""
+    await init_tools(db_session, tenant_id)
 
 
 def get_available_tools() -> list:
@@ -74,8 +84,10 @@ async def execute_tool(tool_name: str, **kwargs) -> dict:
     registry = get_tool_registry()
     result = await registry.execute(tool_name, **kwargs)
 
+    from app.core.agent.tools.base import ToolStatus
+
     return {
-        "success": result.status == "success",
+        "success": result.status == ToolStatus.SUCCESS,
         "data": result.data,
         "error": result.error,
         "execution_time_ms": result.execution_time_ms,

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.knowledge import Knowledge
 from app.services.trend_service import TrendAnalysisService
-from app.services.relation_service import RelationDiscoveryService
+from app.services.recommendation_service import KnowledgeRecommendationService
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -35,10 +35,20 @@ class Reminder:
 class ActiveReminderService:
     """主动提醒服务"""
 
-    def __init__(self, db_session: AsyncSession):
+    def __init__(self, db_session: AsyncSession, tenant_id):
+        import uuid as _uuid
+
         self.db = db_session
+        self.tenant_id = (
+            tenant_id
+            if isinstance(tenant_id, _uuid.UUID)
+            else _uuid.UUID(str(tenant_id))
+        )
+        from app.services.tenant_scope import tenant_knowledge_filter
+
+        self._tk = tenant_knowledge_filter(self.tenant_id)
         self.trend_service = TrendAnalysisService(db_session)
-        self.relation_service = RelationDiscoveryService(db_session)
+        self.recommendation_service = KnowledgeRecommendationService(db_session)
 
     async def generate_reminders(self) -> List[Reminder]:
         """
@@ -94,7 +104,7 @@ class ActiveReminderService:
             target_end = datetime.combine(target_date, datetime.max.time())
 
             stmt = (
-                select(Knowledge)
+                select(Knowledge).where(self._tk)
                 .where(
                     and_(
                         Knowledge.created_at >= target_start,
@@ -132,17 +142,18 @@ class ActiveReminderService:
         # 获取最近7天创建的知识
         week_ago = datetime.now() - timedelta(days=7)
 
-        stmt = select(Knowledge).where(Knowledge.created_at >= week_ago).limit(10)
+        stmt = (
+            select(Knowledge)
+            .where(self._tk, Knowledge.created_at >= week_ago)
+            .limit(10)
+        )
 
         result = await self.db.execute(stmt)
         recent_knowledge = result.scalars().all()
 
-        # 发现关系
-        await self.relation_service.discover_all_relations()
-
         for knowledge in recent_knowledge:
-            related = self.relation_service.get_related_knowledge(
-                str(knowledge.id), min_strength=0.7
+            related = await self.recommendation_service.recommend_related(
+                str(knowledge.id), limit=5
             )
 
             if related:
@@ -224,7 +235,7 @@ class ActiveReminderService:
         例如："你去年记录的关于 Python 异步的想法，与你今天阅读的这篇文章观点一致"
         """
         # 获取当前知识
-        stmt = select(Knowledge).where(Knowledge.id == knowledge_id)
+        stmt = select(Knowledge).where(self._tk, Knowledge.id == knowledge_id)
         result = await self.db.execute(stmt)
         current = result.scalar_one_or_none()
 

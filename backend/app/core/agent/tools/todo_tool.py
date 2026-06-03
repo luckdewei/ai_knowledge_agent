@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 class TodoTool(BaseTool):
     """待办事项工具"""
 
-    def __init__(self, db_session: AsyncSession):
+    def __init__(self, db_session: AsyncSession, tenant_id):
         self.db = db_session
+        self.tenant_id = tenant_id
 
     @property
     def name(self) -> str:
@@ -106,6 +107,7 @@ class TodoTool(BaseTool):
             )
 
         todo = TodoItem(
+            tenant_id=self.tenant_id,
             title=title,
             description=params.get("description"),
             priority=params.get("priority", 1),
@@ -130,7 +132,7 @@ class TodoTool(BaseTool):
         """列出待办"""
         status_filter = params.get("status", "pending")
 
-        stmt = select(TodoItem)
+        stmt = select(TodoItem).where(TodoItem.tenant_id == self.tenant_id)
 
         if status_filter == "pending":
             stmt = stmt.where(TodoItem.completed == False)
@@ -157,7 +159,9 @@ class TodoTool(BaseTool):
                 status=ToolStatus.FAILED, error="Missing required parameter: todo_id"
             )
 
-        stmt = select(TodoItem).where(TodoItem.id == todo_id)
+        stmt = select(TodoItem).where(
+            TodoItem.id == todo_id, TodoItem.tenant_id == self.tenant_id
+        )
         result = await self.db.execute(stmt)
         todo = result.scalar_one_or_none()
 
@@ -184,7 +188,9 @@ class TodoTool(BaseTool):
                 status=ToolStatus.FAILED, error="Missing required parameter: todo_id"
             )
 
-        stmt = delete(TodoItem).where(TodoItem.id == todo_id)
+        stmt = delete(TodoItem).where(
+            TodoItem.id == todo_id, TodoItem.tenant_id == self.tenant_id
+        )
         await self.db.execute(stmt)
         await self.db.commit()
 
@@ -203,7 +209,9 @@ class TodoTool(BaseTool):
                 status=ToolStatus.FAILED, error="Missing required parameter: todo_id"
             )
 
-        stmt = select(TodoItem).where(TodoItem.id == todo_id)
+        stmt = select(TodoItem).where(
+            TodoItem.id == todo_id, TodoItem.tenant_id == self.tenant_id
+        )
         result = await self.db.execute(stmt)
         todo = result.scalar_one_or_none()
 

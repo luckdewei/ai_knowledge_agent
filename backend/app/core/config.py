@@ -39,8 +39,13 @@ class Settings(BaseSettings):
         alias="DATABASE_URL",
     )
 
-    # Redis 配置（用于缓存和任务队列）
+    # Redis（可选：Embedding/统计/检索缓存；不可用时自动降级）
+    redis_enabled: bool = Field(default=True, alias="REDIS_ENABLED")
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
+    cache_ttl_embedding: int = Field(default=86400 * 7, alias="CACHE_TTL_EMBEDDING")
+    cache_ttl_stats: int = Field(default=60, alias="CACHE_TTL_STATS")
+    cache_ttl_insights: int = Field(default=300, alias="CACHE_TTL_INSIGHTS")
+    cache_ttl_search: int = Field(default=120, alias="CACHE_TTL_SEARCH")
 
     # SMTP 配置
     smtp_host: str = Field(default="smtp.gmail.com", alias="SMTP_HOST")
@@ -50,6 +55,13 @@ class Settings(BaseSettings):
 
     # Tavily API 配置
     tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
+
+    # JWT（租户登录）
+    jwt_secret: str = Field(
+        default="change-me-in-production-use-long-random-string",
+        alias="JWT_SECRET",
+    )
+    jwt_expire_hours: int = Field(default=168, alias="JWT_EXPIRE_HOURS")
 
     # 加载环境变量
     model_config = SettingsConfigDict(

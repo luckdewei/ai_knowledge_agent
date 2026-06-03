@@ -153,4 +153,5 @@ class IngestResponse(BaseModel):
     auto_summary: Optional[str] = None
     processing_time_ms: float
     is_duplicate: bool = False
+    is_updated: bool = False
     error: Optional[str] = None

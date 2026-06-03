@@ -53,8 +53,14 @@ class Relation:
 class RelationDiscoveryService:
     """关系发现服务"""
 
-    def __init__(self, db_session: AsyncSession):
+    def __init__(self, db_session: AsyncSession, tenant_id):
+        import uuid as _uuid
+
         self.db = db_session
+        self.tenant_id = tenant_id if isinstance(tenant_id, _uuid.UUID) else _uuid.UUID(str(tenant_id))
+        from app.services.tenant_scope import tenant_knowledge_filter
+
+        self._tk = tenant_knowledge_filter(self.tenant_id)
         self.graph = nx.Graph()
 
     async def discover_all_relations(
@@ -110,7 +116,7 @@ class RelationDiscoveryService:
         基于向量相似度发现语义相近的知识条目
         """
         # 获取知识列表
-        stmt = select(Knowledge).where(Knowledge.embedding.is_not(None))
+        stmt = select(Knowledge).where(self._tk, Knowledge.embedding.is_not(None))
         if knowledge_ids:
             stmt = stmt.where(Knowledge.id.in_(knowledge_ids))
 
@@ -160,7 +166,9 @@ class RelationDiscoveryService:
 
         # 查询有标签的知识
         stmt = select(Knowledge).where(
-            Knowledge.tags.is_not(None), func.array_length(Knowledge.tags, 1) > 0
+            self._tk,
+            Knowledge.tags.is_not(None),
+            func.array_length(Knowledge.tags, 1) > 0,
         )
         if knowledge_ids:
             stmt = stmt.where(Knowledge.id.in_(knowledge_ids))
@@ -204,7 +212,7 @@ class RelationDiscoveryService:
 
         在时间上相近的知识条目可能存在关联
         """
-        stmt = select(Knowledge).order_by(Knowledge.created_at)
+        stmt = select(Knowledge).where(self._tk).order_by(Knowledge.created_at)
         if knowledge_ids:
             stmt = stmt.where(Knowledge.id.in_(knowledge_ids))
 
@@ -249,7 +257,7 @@ class RelationDiscoveryService:
         提取命名实体，发现共同出现的实体
         """
         # 获取知识列表
-        stmt = select(Knowledge)
+        stmt = select(Knowledge).where(self._tk)
         if knowledge_ids:
             stmt = stmt.where(Knowledge.id.in_(knowledge_ids))
 
@@ -306,7 +314,7 @@ class RelationDiscoveryService:
         from app.core.agent.llm import get_llm, Message, MessageRole
 
         # 获取知识列表
-        stmt = select(Knowledge).limit(20)  # 限制数量，避免过多 API 调用
+        stmt = select(Knowledge).where(self._tk).limit(20)
         if knowledge_ids:
             stmt = stmt.where(Knowledge.id.in_(knowledge_ids))
 

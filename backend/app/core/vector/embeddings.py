@@ -116,9 +116,22 @@ class OnlineEmbeddings:
         return all_embeddings
 
     async def embed_query(self, query: str) -> List[float]:
-        """检索场景：单条 query 转向量。"""
-        embeddings = await self.embed([query])
-        return embeddings[0]
+        """检索场景：单条 query 转向量（Redis 缓存命中则跳过 API）。"""
+        from app.core.cache import CacheService, cache_key, hash_text
+        from app.core.config import settings
+
+        normalized = query.strip()
+        if normalized:
+            ck = cache_key("emb", hash_text(f"{self.model}:{normalized}"))
+            cached = await CacheService.get_json(ck)
+            if isinstance(cached, list) and cached:
+                return cached
+
+        vector = (await self.embed([query]))[0]
+
+        if normalized:
+            await CacheService.set_json(ck, vector, settings.cache_ttl_embedding)
+        return vector
 
     async def embed_documents(self, documents: List[str]) -> List[List[float]]:
         """入库场景：批量文档转向量。"""

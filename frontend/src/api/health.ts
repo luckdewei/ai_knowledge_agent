@@ -6,7 +6,12 @@ export interface HealthStatus {
   version: string
 }
 
+export interface HealthData {
+  status: string
+  version: string
+}
+
 export const healthApi = {
-  check: () => client.get<HealthStatus>('/health/'),
+  check: () => client.get<HealthData>('/health/'),
   ready: () => client.get<{ ready: boolean }>('/health/ready'),
 }

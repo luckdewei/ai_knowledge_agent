@@ -75,8 +75,4 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     类型检查器（basedpyright）要求标注为生成器类型。
     """
     async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            # async with 退出时通常已关闭 session，此处显式 close 作为兜底
-            await session.close()
+        yield session
